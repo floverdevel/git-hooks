@@ -1,0 +1,153 @@
+#!/bin/bash
+# pre-commit hook for git
+#
+# basically, this script executes some tests and scans on the staged area
+#
+# + PHP Syntax Validation
+# + PHP Code Sniffer
+#
+# @todo :
+# + PHP Unit (allUnitTest.php)
+#
+# @author Ellis Antaya <eantaya@lapresse.ca>
+# @author Soenke Ruempler <soenke@ruempler.eu>
+# @author Sebastian Kaspari <s.kaspari@googlemail.com>
+#
+# see the README
+
+
+# =======================
+# Main thread
+# -----------------------
+
+function clean {
+    # delete temporary copy of staging area
+    rm -rf $TMP_STAGING
+}
+
+TMP_STAGING=".hook_pre_commit_tmp_staging"
+
+# parse config
+CONFIG_FILE=$(dirname $0)/config
+if [ -e $CONFIG_FILE ]; then
+    . $CONFIG_FILE
+fi
+
+# stolen from template file
+if git rev-parse --verify HEAD
+then
+    against=HEAD
+else
+    # Initial commit: diff against an empty tree object
+    against=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+fi
+
+# this is the magic:
+# retrieve all files in staging area that are added, modified or renamed
+# but no deletions etc
+FILES=$(git diff-index --name-only --cached --diff-filter=ACMR $against -- )
+
+if [ "$FILES" == "" ]; then
+    exit 0
+fi
+
+# create temporary copy of staging area
+if [ -e $TMP_STAGING ]; then
+    rm -rf $TMP_STAGING
+fi
+mkdir $TMP_STAGING
+
+# match files against whitelist
+FILES_TO_CHECK=""
+for FILE in $FILES
+do
+    #echo "$FILE" | egrep -q "$PHPCS_FILE_PATTERN"
+    #RETVAL=$?
+    #if [ "$RETVAL" -eq "0" ]
+    #then
+        FILES_TO_CHECK="$FILES_TO_CHECK $FILE"
+    #fi
+done
+
+if [ "$FILES_TO_CHECK" == "" ]; then
+    clean
+    exit 0
+fi
+
+# Copy contents of staged version of files to temporary staging area
+# because we only want the staged version that will be commited and not
+# the version in the working directory
+STAGED_FILES=""
+for FILE in $FILES_TO_CHECK
+do
+  ID=$(git diff-index --cached HEAD $FILE | cut -d " " -f4)
+
+  # create staged version of file in temporary staging area with the same
+  # path as the original file so that the phpcs ignore filters can be applied
+  mkdir -p "$TMP_STAGING/$(dirname $FILE)"
+  git cat-file blob $ID > "$TMP_STAGING/$FILE"
+  STAGED_FILES="$STAGED_FILES $TMP_STAGING/$FILE"
+done
+
+
+# =======================
+# PHP Syntax Validation
+# -----------------------
+PHP_BIN=php
+
+# simple check if php is set up correctly
+#if [ ! -x $PHP_BIN ]; then
+#    echo "PHP bin not found or not executable (PHP_BIN=$PHP_BIN)"
+#    clean
+#    exit 1
+#fi
+OUTPUT=$($PHP_BIN -l $TMP_STAGING/*)
+RETVAL=$?
+
+if [ $RETVAL -ne 0 ]; then
+    clean
+    echo "$OUTPUT" | less
+    exit $RETVAL
+fi
+
+
+# =======================
+# PHP CodeSniffer
+# -----------------------
+PHPCS_BIN=$(which phpcs) # using 'which' since we have multiple different environnement and we cannot simply call phpcs without full path
+PHPCS_CODING_STANDARD=PSR2
+PHPCS_EXTENSIONS="php,inc"
+PHPCS_IGNORE="*/_writable/*,*/vendor/*,*/View/*"
+
+# simple check if php code sniffer is set up correctly
+if [ ! -x $PHPCS_BIN ]; then
+    clean 
+    echo "PHP CodeSniffer bin not found or not executable (PHPCS_BIN=$PHPCS_BIN)"
+    exit 1
+fi
+
+if [ "$PHPCS_IGNORE" != "" ]; then
+    IGNORE="--ignore=$PHPCS_IGNORE"
+else
+    IGNORE=""
+fi
+
+if [ "$PHPCS_EXTENSIONS" != "" ]; then
+    EXTENSIONS="--extensions=$PHPCS_EXTENSIONS"
+else
+    EXTENSIONS=""
+fi
+
+# execute the code sniffer
+OUTPUT=$($PHPCS_BIN -n -s --standard=$PHPCS_CODING_STANDARD $EXTENSIONS $IGNORE $STAGED_FILES)
+RETVAL=$?
+
+if [ $RETVAL -ne 0 ]; then
+    clean
+    echo "$OUTPUT" | less
+    exit $RETVAL
+fi
+
+clean
+echo 'pre-commit hook succeed'
+exit 0
